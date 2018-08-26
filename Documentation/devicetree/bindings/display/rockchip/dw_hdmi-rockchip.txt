@@ -38,6 +38,7 @@ Optional properties
 - clock-names: May contain "vpll", external clock for some hdmi phy.
 - phys: from general PHY binding: the phandle for the PHY device.
 - phy-names: Should be "hdmi" if phys references an external phy.
+- rockchip,hdmi-rates-hz: List of allowed HDMI frequencies in Hz.
 
 Optional pinctrl entry:
 - If you have both a "unwedge" and "default" pinctrl entry, dw_hdmi
