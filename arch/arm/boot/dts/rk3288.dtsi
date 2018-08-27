@@ -840,12 +840,14 @@
 		rockchip,grf = <&grf>;
 		#clock-cells = <1>;
 		#reset-cells = <1>;
-		assigned-clocks = <&cru PLL_GPLL>, <&cru PLL_CPLL>,
+		assigned-clocks = <&cru DCLK_VOP0>, <&cru DCLK_VOP1>,
+				  <&cru PLL_GPLL>, <&cru PLL_CPLL>,
 				  <&cru PLL_NPLL>, <&cru ACLK_CPU>,
 				  <&cru HCLK_CPU>, <&cru PCLK_CPU>,
 				  <&cru ACLK_PERI>, <&cru HCLK_PERI>,
 				  <&cru PCLK_PERI>;
-		assigned-clock-rates = <594000000>, <400000000>,
+		assigned-clock-rates = <0>, <0>,
+				       <594000000>, <400000000>,
 				       <500000000>, <300000000>,
 				       <150000000>, <75000000>,
 				       <300000000>, <150000000>,
@@ -1263,10 +1265,11 @@
 			opp-hz = /bits/ 64 <400000000>;
 			opp-microvolt = <1100000>;
 		};
-		opp@500000000 {
+		/* Disabled because the frequency is not always available due possible NPLL dedication to HDMI */
+		/* opp@500000000 {
 			opp-hz = /bits/ 64 <500000000>;
 			opp-microvolt = <1200000>;
-		};
+		}; */
 		opp@600000000 {
 			opp-hz = /bits/ 64 <600000000>;
 			opp-microvolt = <1250000>;
