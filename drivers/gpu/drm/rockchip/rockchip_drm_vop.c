@@ -896,6 +896,7 @@ static void vop_crtc_atomic_enable(struct drm_crtc *crtc,
 	u16 vsync_len = adjusted_mode->vsync_end - adjusted_mode->vsync_start;
 	u16 vact_st = adjusted_mode->vtotal - adjusted_mode->vsync_start;
 	u16 vact_end = vact_st + vdisplay;
+	uint32_t dither_bits=0;
 	uint32_t pin_pol, val;
 	int ret;
 
@@ -951,10 +952,14 @@ static void vop_crtc_atomic_enable(struct drm_crtc *crtc,
 	    !(vop_data->feature & VOP_FEATURE_OUTPUT_RGB10))
 		s->output_mode = ROCKCHIP_OUT_MODE_P888;
 
-	if (s->output_mode == ROCKCHIP_OUT_MODE_AAAA && s->output_bpc == 8)
-		VOP_REG_SET(vop, common, pre_dither_down, 1);
-	else
-		VOP_REG_SET(vop, common, pre_dither_down, 0);
+	/* dither_down includes the bit for pre_dither_down */
+	if (s->output_bpc) { /* Only dither if bpc known. */
+		if (s->output_mode == ROCKCHIP_OUT_MODE_AAAA && s->output_bpc <= 8)
+			dither_bits = 1;
+		/* Enable allegro dither to RGB666 */
+		if (s->output_bpc == 6) dither_bits |= 6;
+	}
+	VOP_REG_SET(vop, common, dither_down, dither_bits);
 
 	VOP_REG_SET(vop, common, out_mode, s->output_mode);
 
