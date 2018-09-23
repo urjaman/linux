@@ -117,7 +117,13 @@ struct vop_win {
 	struct vop *vop;
 };
 
+
+/* Only export 256 since that is what userspace uses for now. */
+#define EXT_GAMMA_LUT_SIZE 256
+#define GAMMA_LUT_SIZE 1024
+
 struct rockchip_rgb;
+
 struct vop {
 	struct drm_crtc crtc;
 	struct device *dev;
@@ -142,6 +148,12 @@ struct vop {
 
 	/* physical map length of vop register */
 	uint32_t len;
+
+	/* Gamma tables, not part of regs as specified in dt. */
+	uint32_t hwgamma_shadow[GAMMA_LUT_SIZE];
+	void __iomem *hwgamma;
+	unsigned long gamma_upd;
+	bool gamma_lut_active;
 
 	/* one time only one process allowed to config the register */
 	spinlock_t reg_lock;
@@ -1143,6 +1155,12 @@ static void vop_crtc_atomic_enable(struct drm_crtc *crtc,
 		VOP_REG_SET(vop, common, dither_down_en, 0);
 	}
 
+	/* Default to no gamma tables for now. */
+	if (vop->hwgamma) {
+		VOP_REG_SET(vop, common, dsp_lut_en, 0);
+		vop->gamma_lut_active = false;
+	}
+
 	VOP_REG_SET(vop, common, out_mode, s->output_mode);
 
 	VOP_REG_SET(vop, modeset, htotal_pw, (htotal << 16) | hsync_len);
@@ -1191,6 +1209,65 @@ static void vop_wait_for_irq_handler(struct vop *vop)
 	synchronize_irq(vop->irq);
 }
 
+static void vop_write_gamma_lut(struct vop* vop)
+{
+	uint32_t i;
+
+	for (i = 0; i < GAMMA_LUT_SIZE; i++) {
+		writel(vop->hwgamma_shadow[i], vop->hwgamma + (i * 4));
+	}
+}
+
+static void vop_gamma_vsync(struct vop* vop)
+{
+	uint32_t prev_lut_en = vop_read_reg(vop, 0, &vop->data->common->dsp_lut_en);
+	if (prev_lut_en) {
+		/* Flip the LUT off so we can update next time. */
+		VOP_REG_SET(vop, common, dsp_lut_en, 0);
+	} else {
+		vop_write_gamma_lut(vop);
+		VOP_REG_SET(vop, common, dsp_lut_en, 1);
+		WRITE_ONCE(vop->gamma_upd, 0);
+	}
+	vop_cfg_done(vop);
+}
+
+static bool vop_compute_gamma_lut(struct vop* vop)
+{
+	struct drm_crtc *crtc = &vop->crtc;
+	struct drm_color_lut *lut = crtc->state->gamma_lut->data;
+	bool changed = false;
+	uint32_t i, n;
+	const uint32_t rep = GAMMA_LUT_SIZE / EXT_GAMMA_LUT_SIZE;
+
+	for (i = 0; i < EXT_GAMMA_LUT_SIZE; i++) {
+		uint32_t val = drm_color_lut_extract(lut[i].red, 10) << 20 |
+			       drm_color_lut_extract(lut[i].green, 10) << 10 |
+			       drm_color_lut_extract(lut[i].blue, 10);
+		if (val != vop->hwgamma_shadow[i*rep]) changed = true;
+		for (n = 0; n < rep; n++) {
+			vop->hwgamma_shadow[(i * rep) + n] = val;
+		}
+	}
+	return changed;
+}
+
+static void vop_update_gamma_lut(struct vop* vop)
+{
+	struct drm_crtc *crtc = &vop->crtc;
+	if (crtc->state->gamma_lut) {
+		bool changed = vop_compute_gamma_lut(vop);
+		if ((vop->gamma_lut_active) && (!changed)) return;
+		vop->gamma_lut_active = true;
+		WRITE_ONCE(vop->gamma_upd, 1);
+	} else {
+		/* Identity/noop gamma, just disable the lut. */
+		vop->gamma_lut_active = false;
+		WRITE_ONCE(vop->gamma_upd, 0);
+		VOP_REG_SET(vop, common, dsp_lut_en, 0);
+	}
+}
+
 static void vop_crtc_atomic_flush(struct drm_crtc *crtc,
 				  struct drm_crtc_state *old_crtc_state)
 {
@@ -1204,6 +1281,9 @@ static void vop_crtc_atomic_flush(struct drm_crtc *crtc,
 		return;
 
 	spin_lock(&vop->reg_lock);
+
+	if ((vop->hwgamma) && (crtc->state->color_mgmt_changed))
+		vop_update_gamma_lut(vop);
 
 	vop_cfg_done(vop);
 
@@ -1355,6 +1435,7 @@ static const struct drm_crtc_funcs vop_crtc_funcs = {
 	.page_flip = drm_atomic_helper_page_flip,
 	.destroy = vop_crtc_destroy,
 	.reset = vop_crtc_reset,
+	.gamma_set = drm_atomic_helper_legacy_gamma_set,
 	.atomic_duplicate_state = vop_crtc_duplicate_state,
 	.atomic_destroy_state = vop_crtc_destroy_state,
 	.enable_vblank = vop_crtc_enable_vblank,
@@ -1440,6 +1521,7 @@ static irqreturn_t vop_isr(int irq, void *data)
 	if (active_irqs & FS_INTR) {
 		drm_crtc_handle_vblank(crtc);
 		vop_handle_vblank(vop);
+		if (READ_ONCE(vop->gamma_upd)) vop_gamma_vsync(vop);
 		active_irqs &= ~FS_INTR;
 		ret = IRQ_HANDLED;
 	}
@@ -1518,6 +1600,9 @@ static int vop_create_crtc(struct vop *vop)
 		goto err_cleanup_planes;
 
 	drm_crtc_helper_add(crtc, &vop_crtc_helper_funcs);
+	/* Gamma tables */
+	drm_mode_crtc_set_gamma_size(crtc, EXT_GAMMA_LUT_SIZE);
+	drm_crtc_enable_color_mgmt(crtc, 0, false, EXT_GAMMA_LUT_SIZE);
 
 	/*
 	 * Create drm_planes for overlay windows with possible_crtcs restricted
@@ -1832,6 +1917,19 @@ static int vop_bind(struct device *dev, struct device *master, void *data)
 		return irq;
 	}
 	vop->irq = (unsigned int)irq;
+
+	if (vop->data->gamma_lut_offset) {
+		const unsigned int gamma_len = GAMMA_LUT_SIZE*4;
+		resource_size_t gamma_addr = res->start + vop->data->gamma_lut_offset;
+		struct resource gamma_res = DEFINE_RES_MEM_NAMED(gamma_addr, gamma_len, "rockchip gamma LUT");
+		vop->hwgamma = devm_ioremap_resource(dev, &gamma_res);
+		if (IS_ERR(vop->hwgamma)) {
+			DRM_DEV_ERROR(dev, "failed to map gamma lut, err %ld\n", PTR_ERR(vop->hwgamma));
+			vop->hwgamma = 0;
+			goto gamma_out; /* I suppose it is better to run without gamma than fail loading. */
+		}
+	}
+gamma_out:
 
 	spin_lock_init(&vop->reg_lock);
 	spin_lock_init(&vop->irq_lock);
