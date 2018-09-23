@@ -476,6 +476,7 @@ static const struct vop_common rk3288_common = {
 	.pre_dither_down = VOP_REG(RK3288_DSP_CTRL1, 0x1, 1),
 	.dither_down = VOP_REG(RK3288_DSP_CTRL1, 0xf, 1),
 	.dither_up = VOP_REG(RK3288_DSP_CTRL1, 0x1, 6),
+	.dsp_lut_en = VOP_REG(RK3288_DSP_CTRL1, 0x1, 0),
 	.data_blank = VOP_REG(RK3288_DSP_CTRL0, 0x1, 19),
 	.dsp_blank = VOP_REG(RK3288_DSP_CTRL0, 0x3, 18),
 	.out_mode = VOP_REG(RK3288_DSP_CTRL0, 0xf, 0),
@@ -524,6 +525,7 @@ static const struct vop_data rk3288_vop = {
 	.output = &rk3288_output,
 	.win = rk3288_vop_win_data,
 	.win_size = ARRAY_SIZE(rk3288_vop_win_data),
+	.gamma_lut_offset = RK3288_GAMMA_LUT_ADDR,
 };
 
 static const int rk3368_vop_intrs[] = {
@@ -642,6 +644,7 @@ static const struct vop_data rk3399_vop_big = {
 	.misc = &rk3368_misc,
 	.win = rk3368_vop_win_data,
 	.win_size = ARRAY_SIZE(rk3368_vop_win_data),
+	.gamma_lut_offset = RK3399_GAMMA_LUT_ADDR,
 };
 
 static const struct vop_win_data rk3399_vop_lit_win_data[] = {
@@ -660,6 +663,7 @@ static const struct vop_data rk3399_vop_lit = {
 	.misc = &rk3368_misc,
 	.win = rk3399_vop_lit_win_data,
 	.win_size = ARRAY_SIZE(rk3399_vop_lit_win_data),
+	.gamma_lut_offset = RK3399_GAMMA_LUT_ADDR,
 };
 
 static const struct vop_win_data rk3228_vop_win_data[] = {
