@@ -113,6 +113,12 @@
 #define RK3288_DSP_VACT_ST_END			0x0194
 #define RK3288_DSP_VS_ST_END_F1			0x0198
 #define RK3288_DSP_VACT_ST_END_F1		0x019c
+/* this is the end of what the device tree includes as RK3288 registers;
+ * there is an instance of rk_iommu in between. */
+#define RK3288_WIN2_LUT_ADDR			0x0400
+#define RK3288_WIN3_LUT_ADDR			0x0800
+#define RK3288_HWC_LUT_ADDR			0x0c00
+#define RK3288_GAMMA_LUT_ADDR			0x1000
 /* register definition end */
 
 /* rk3368 register definition */
