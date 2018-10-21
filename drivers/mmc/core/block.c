@@ -938,12 +938,14 @@ static unsigned int mmc_blk_data_timeout_ms(struct mmc_host *host,
 static int mmc_blk_reset(struct mmc_blk_data *md, struct mmc_host *host,
 			 int type)
 {
+	int retries = 1;
 	int err;
 
 	if (md->reset_done & type)
 		return -EEXIST;
 
 	md->reset_done |= type;
+retry:
 	err = mmc_hw_reset(host);
 	/* Ensure we switch back to the correct partition */
 	if (err != -EOPNOTSUPP) {
@@ -960,6 +962,10 @@ static int mmc_blk_reset(struct mmc_blk_data *md, struct mmc_host *host,
 			 */
 			return -ENODEV;
 		}
+	}
+	/* Retry once because the C201 eMMC can be touchy */
+	if ((err) && (retries--)) {
+		goto retry;
 	}
 	return err;
 }
