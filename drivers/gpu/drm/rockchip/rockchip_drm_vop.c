@@ -131,8 +131,10 @@ struct vop {
 	unsigned long gamma_upd;
 	bool gamma_lut_active;
 
-	/* one time only one process allowed to config the register */
-	spinlock_t reg_lock;
+	/* lock for common/output regs - used from ISR for gamma */
+	spinlock_t ctrlreg_lock;
+	/* lock for win registers (not common/output) - not used from ISR */
+	spinlock_t winreg_lock;
 	/* lock vop irq reg */
 	spinlock_t irq_lock;
 	/* protects crtc enable/disable */
@@ -219,7 +221,9 @@ static inline uint32_t vop_get_intr_type(struct vop *vop,
 
 static inline void vop_cfg_done(struct vop *vop)
 {
-	VOP_REG_SET(vop, common, cfg_done, 1);
+	/* Setting cfg_done is just a "blind" write, needs no lock,
+	 * so make that explicit like this. */
+	writel(1, vop->regs + vop->data->common->cfg_done.offset);
 }
 
 static bool has_rb_swapped(uint32_t format)
@@ -526,6 +530,7 @@ static void vop_core_clks_disable(struct vop *vop)
 static int vop_enable(struct drm_crtc *crtc)
 {
 	struct vop *vop = to_vop(crtc);
+	unsigned long flags;
 	int ret, i;
 
 	ret = pm_runtime_get_sync(vop->dev);
@@ -555,7 +560,8 @@ static int vop_enable(struct drm_crtc *crtc)
 		goto err_disable_dclk;
 	}
 
-	spin_lock(&vop->reg_lock);
+	spin_lock(&vop->winreg_lock);
+	spin_lock_irqsave(&vop->ctrlreg_lock, flags);
 	for (i = 0; i < vop->len; i += 4)
 		writel_relaxed(vop->regsbak[i / 4], vop->regs + i);
 
@@ -570,7 +576,8 @@ static int vop_enable(struct drm_crtc *crtc)
 
 		VOP_WIN_SET(vop, win, enable, 0);
 	}
-	spin_unlock(&vop->reg_lock);
+	spin_unlock_irqrestore(&vop->ctrlreg_lock, flags);
+	spin_unlock(&vop->winreg_lock);
 
 	vop_cfg_done(vop);
 
@@ -579,11 +586,11 @@ static int vop_enable(struct drm_crtc *crtc)
 	 */
 	vop->is_enabled = true;
 
-	spin_lock(&vop->reg_lock);
+	spin_lock_irqsave(&vop->ctrlreg_lock, flags);
 
 	VOP_REG_SET(vop, common, standby, 1);
 
-	spin_unlock(&vop->reg_lock);
+	spin_unlock_irqrestore(&vop->ctrlreg_lock, flags);
 
 	drm_crtc_vblank_on(crtc);
 
@@ -602,6 +609,7 @@ static void vop_crtc_atomic_disable(struct drm_crtc *crtc,
 				    struct drm_crtc_state *old_state)
 {
 	struct vop *vop = to_vop(crtc);
+	unsigned long flags;
 
 	WARN_ON(vop->event);
 
@@ -618,11 +626,11 @@ static void vop_crtc_atomic_disable(struct drm_crtc *crtc,
 	reinit_completion(&vop->dsp_hold_completion);
 	vop_dsp_hold_valid_irq_enable(vop);
 
-	spin_lock(&vop->reg_lock);
+	spin_lock_irqsave(&vop->ctrlreg_lock, flags);
 
 	VOP_REG_SET(vop, common, standby, 1);
 
-	spin_unlock(&vop->reg_lock);
+	spin_unlock_irqrestore(&vop->ctrlreg_lock, flags);
 
 	wait_for_completion(&vop->dsp_hold_completion);
 
@@ -710,11 +718,11 @@ static void vop_plane_atomic_disable(struct drm_plane *plane,
 	if (!old_state->crtc)
 		return;
 
-	spin_lock(&vop->reg_lock);
+	spin_lock(&vop->winreg_lock);
 
 	VOP_WIN_SET(vop, win, enable, 0);
 
-	spin_unlock(&vop->reg_lock);
+	spin_unlock(&vop->winreg_lock);
 }
 
 static void vop_plane_atomic_update(struct drm_plane *plane,
@@ -774,7 +782,7 @@ static void vop_plane_atomic_update(struct drm_plane *plane,
 
 	format = vop_convert_format(fb->format->format);
 
-	spin_lock(&vop->reg_lock);
+	spin_lock(&vop->winreg_lock);
 
 	VOP_WIN_SET(vop, win, format, format);
 	VOP_WIN_SET(vop, win, yrgb_vir, DIV_ROUND_UP(fb->pitches[0], 4));
@@ -828,7 +836,7 @@ static void vop_plane_atomic_update(struct drm_plane *plane,
 	}
 
 	VOP_WIN_SET(vop, win, enable, 1);
-	spin_unlock(&vop->reg_lock);
+	spin_unlock(&vop->winreg_lock);
 }
 
 static const struct drm_plane_helper_funcs plane_helper_funcs = {
@@ -1039,8 +1047,12 @@ static void vop_write_gamma_lut(struct vop* vop)
 
 static void vop_gamma_vsync(struct vop* vop)
 {
-	uint32_t prev_lut_en = vop_read_reg(vop, 0, &vop->data->common->dsp_lut_en);
-	if (prev_lut_en) {
+	uint32_t lut_en;
+
+	spin_lock(&vop->ctrlreg_lock);
+
+	lut_en  = vop_read_reg(vop, 0, &vop->data->common->dsp_lut_en);
+	if (lut_en) {
 		/* Flip the LUT off so we can update next time. */
 		VOP_REG_SET(vop, common, dsp_lut_en, 0);
 	} else {
@@ -1049,6 +1061,8 @@ static void vop_gamma_vsync(struct vop* vop)
 		WRITE_ONCE(vop->gamma_upd, 0);
 	}
 	vop_cfg_done(vop);
+
+	spin_unlock(&vop->ctrlreg_lock);
 }
 
 static bool vop_compute_gamma_lut(struct vop* vop)
@@ -1080,10 +1094,16 @@ static void vop_update_gamma_lut(struct vop* vop)
 		vop->gamma_lut_active = true;
 		WRITE_ONCE(vop->gamma_upd, 1);
 	} else {
+		unsigned long flags;
+
+		spin_lock_irqsave(&vop->ctrlreg_lock, flags);
+
 		/* Identity/noop gamma, just disable the lut. */
 		vop->gamma_lut_active = false;
 		WRITE_ONCE(vop->gamma_upd, 0);
 		VOP_REG_SET(vop, common, dsp_lut_en, 0);
+
+		spin_unlock_irqrestore(&vop->ctrlreg_lock, flags);
 	}
 }
 
@@ -1099,14 +1119,10 @@ static void vop_crtc_atomic_flush(struct drm_crtc *crtc,
 	if (WARN_ON(!vop->is_enabled))
 		return;
 
-	spin_lock(&vop->reg_lock);
-
 	if ((vop->hwgamma) && (crtc->state->color_mgmt_changed))
 		vop_update_gamma_lut(vop);
 
 	vop_cfg_done(vop);
-
-	spin_unlock(&vop->reg_lock);
 
 	/*
 	 * There is a (rather unlikely) possiblity that a vblank interrupt
@@ -1720,12 +1736,12 @@ static int vop_bind(struct device *dev, struct device *master, void *data)
 		if (IS_ERR(vop->hwgamma)) {
 			DRM_DEV_ERROR(dev, "failed to map gamma lut, err %ld\n", PTR_ERR(vop->hwgamma));
 			vop->hwgamma = 0;
-			goto gamma_out; /* I suppose it is better to run without gamma than fail loading. */
+			/* Better to run without gamma than fail loading. */
 		}
 	}
-gamma_out:
 
-	spin_lock_init(&vop->reg_lock);
+	spin_lock_init(&vop->ctrlreg_lock);
+	spin_lock_init(&vop->winreg_lock);
 	spin_lock_init(&vop->irq_lock);
 	mutex_init(&vop->vop_lock);
 
