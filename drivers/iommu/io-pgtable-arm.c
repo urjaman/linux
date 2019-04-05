@@ -498,7 +498,13 @@ static int arm_lpae_map(struct io_pgtable_ops *ops, unsigned long iova,
 	 * Synchronise all PTE updates for the new mapping before there's
 	 * a chance for anything to kick off a table walk for the new iova.
 	 */
-	wmb();
+	if (data->iop.cfg.quirks & IO_PGTABLE_QUIRK_TLBI_ON_MAP) {
+		io_pgtable_tlb_add_flush(&data->iop, iova, size,
+					 ARM_LPAE_BLOCK_SIZE(2, data), false);
+		io_pgtable_tlb_sync(&data->iop);
+	} else {
+		wmb();
+	}
 
 	return ret;
 }
@@ -793,7 +799,8 @@ arm_64_lpae_alloc_pgtable_s1(struct io_pgtable_cfg *cfg, void *cookie)
 	struct arm_lpae_io_pgtable *data;
 
 	if (cfg->quirks & ~(IO_PGTABLE_QUIRK_ARM_NS | IO_PGTABLE_QUIRK_NO_DMA |
-			    IO_PGTABLE_QUIRK_NON_STRICT))
+			    IO_PGTABLE_QUIRK_NON_STRICT |
+			    IO_PGTABLE_QUIRK_TLBI_ON_MAP))
 		return NULL;
 
 	data = arm_lpae_alloc_pgtable(cfg);
