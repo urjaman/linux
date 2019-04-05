@@ -338,6 +338,7 @@ int panfrost_mmu_init(struct panfrost_device *pfdev)
 	mmu_write(pfdev, MMU_INT_MASK, ~0);
 
 	pfdev->mmu->pgtbl_cfg = (struct io_pgtable_cfg) {
+		.quirks		= IO_PGTABLE_QUIRK_TLBI_ON_MAP,
 		.pgsize_bitmap	= SZ_4K, // | SZ_2M | SZ_1G),
 		.ias		= 48,
 		.oas		= 40,	/* Should come from dma mask? */
