@@ -74,7 +74,7 @@ panfrost_gem_shrinker_scan(struct shrinker *shrinker, struct shrink_control *sc)
 	mutex_unlock(&pfdev->shrinker_lock);
 
 	if (freed > 0)
-		pr_info_ratelimited("Purging %lu bytes\n", freed << PAGE_SHIFT);
+		dev_dbg(pfdev->dev, "Purging %lu bytes\n", freed << PAGE_SHIFT);
 
 	return freed;
 }
