@@ -99,6 +99,32 @@ void panfrost_gem_close(struct drm_gem_object *obj, struct drm_file *file_priv)
 	spin_unlock(&priv->mm_lock);
 }
 
+static struct dma_buf *
+panfrost_gem_export(struct drm_gem_object *obj, int flags)
+{
+	struct panfrost_gem_object *bo = to_panfrost_bo(obj);
+	int ret;
+
+	/*
+	 * We must make sure the BO has not been marked purgeable/purged before
+	 * adding the mapping.
+	 * Note that we don't need to protect this test with a lock because
+	 * &drm_gem_object_funcs.export() is called with
+	 * &drm_device.object_lock held, and panfrost_ioctl_madvise() takes
+	 * this lock before calling drm_gem_shmem_madvise() (the function that
+	 * modifies bo->base.madv).
+	 */
+	if (bo->base.madv == PANFROST_MADV_WILLNEED)
+		ret = -EINVAL;
+	else
+		ret = 0;
+
+	if (ret)
+		return ERR_PTR(ret);
+
+	return drm_gem_prime_export(obj, flags);
+}
+
 static int panfrost_gem_pin(struct drm_gem_object *obj)
 {
 	if (to_panfrost_bo(obj)->is_heap)
@@ -112,6 +138,7 @@ static const struct drm_gem_object_funcs panfrost_gem_funcs = {
 	.open = panfrost_gem_open,
 	.close = panfrost_gem_close,
 	.print_info = drm_gem_shmem_print_info,
+	.export = panfrost_gem_export,
 	.pin = panfrost_gem_pin,
 	.unpin = drm_gem_shmem_unpin,
 	.get_sg_table = drm_gem_shmem_get_sg_table,

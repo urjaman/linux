@@ -343,12 +343,26 @@ static int panfrost_ioctl_madvise(struct drm_device *dev, void *data,
 	struct drm_panfrost_madvise *args = data;
 	struct panfrost_device *pfdev = dev->dev_private;
 	struct drm_gem_object *gem_obj;
+	int ret;
 
 	gem_obj = drm_gem_object_lookup(file_priv, args->handle);
 	if (!gem_obj) {
 		DRM_DEBUG("Failed to look up GEM BO %d\n", args->handle);
 		return -ENOENT;
 	}
+
+	/*
+	 * We don't want to mark exported/imported BOs as purgeable: we're not
+	 * the only owner in that case.
+	 */
+	mutex_lock(&dev->object_name_lock);
+	if (gem_obj->dma_buf)
+		ret = -EINVAL;
+	else
+		ret = 0;
+
+	if (ret)
+		goto out_unlock_object_name;
 
 	mutex_lock(&pfdev->shrinker_lock);
 	args->retained = drm_gem_shmem_madvise(gem_obj, args->madv);
@@ -364,8 +378,11 @@ static int panfrost_ioctl_madvise(struct drm_device *dev, void *data,
 	}
 	mutex_unlock(&pfdev->shrinker_lock);
 
+out_unlock_object_name:
+	mutex_unlock(&dev->object_name_lock);
+
 	drm_gem_object_put_unlocked(gem_obj);
-	return 0;
+	return ret;
 }
 
 int panfrost_unstable_ioctl_check(void)
